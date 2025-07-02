@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ragdoll"
+version = "0.0.1"
+dependencies = [
+  "fastembed-gpu",
+  "pydantic",
+  "pyzotero",
+  "qdrant_client",
+  "rich",
+]
+
+[project.scripts]
+ragdoll = "ragdoll.main:main"
