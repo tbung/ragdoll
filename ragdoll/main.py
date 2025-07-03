@@ -4,15 +4,16 @@ import re
 from pathlib import Path
 from typing import Any, cast
 
-from docling_core.types.doc.document import DoclingDocument
 import numpy as np
-import tomllib
 import rich
+import tomllib
+from docling.chunking import HybridChunker
+from docling.datamodel.base_models import DocumentStream, InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling_core.types.doc.document import DoclingDocument
 from fastembed import TextEmbedding
 from pydantic.dataclasses import dataclass
-from docling.datamodel.base_models import DocumentStream
-from docling.document_converter import DocumentConverter
-from docling.chunking import HybridChunker
 from pyzotero import zotero
 from qdrant_client import QdrantClient
 from rich.logging import RichHandler
@@ -64,6 +65,8 @@ def to_chunks(text: str) -> list[str]:
 
 
 def get_document(zot: zotero.Zotero, key: str) -> DoclingDocument | None:
+    pipeline_options = PdfPipelineOptions()
+    pipeline_options.do_ocr = False  # pick what you need
     item: dict[str, Any]
     for item in zot.children(key):
         if (
@@ -73,13 +76,28 @@ def get_document(zot: zotero.Zotero, key: str) -> DoclingDocument | None:
             filename: str = item["data"]["filename"]
             with io.BytesIO(zot.file(item["key"])) as file:
                 source = DocumentStream(name=filename, stream=file)
-                converter = DocumentConverter()
+                converter = DocumentConverter(
+                    format_options={
+                        InputFormat.PDF: PdfFormatOption(
+                            pipeline_options=pipeline_options,
+                        )
+                    }
+                )
                 return converter.convert(source).document
 
     return None
 
 
-def sync(zot: zotero.Zotero, client: QdrantClient):
+def sync(config: Config, client: QdrantClient):
+    logger.info("Starting Zotero Client")
+    zot = zotero.Zotero(
+        library_id=config.zotero.library_id,
+        library_type=config.zotero.library_type,
+        api_key=config.zotero.api_key,
+        local=True,
+    )
+    logger.info("Zotero Client started")
+
     items = cast(list[dict[str, Any]], zot.top(tag="project-clip-gmm"))
     for item in track(items):
         logger.info(
@@ -120,18 +138,6 @@ def sync(zot: zotero.Zotero, client: QdrantClient):
         _ = client.add(collection_name="zotero", documents=chunks, metadata=metadata)
 
 
-@dataclass
-class ZoteroConfig:
-    library_id: int
-    library_type: str
-    api_key: str
-
-
-@dataclass
-class Config:
-    zotero: ZoteroConfig
-
-
 def main():
     logging.basicConfig(
         format="%(message)s",
@@ -148,14 +154,7 @@ def main():
     client.set_sparse_model("prithivida/Splade_PP_en_v1")
     logger.info("Qdrant Client started")
 
-    zot = zotero.Zotero(
-        library_id=config.zotero.library_id,
-        library_type=config.zotero.library_type,
-        api_key=config.zotero.api_key,
-        local=True,
-    )
-
-    sync(zot, client)
+    sync(config, client)
     # points = client.query(
     #     collection_name="zotero",
     #     query_text="improving clip embeddings",
