@@ -2,7 +2,7 @@ import io
 import logging
 import re
 import urllib.parse
-from typing import Any, cast
+from typing import Any, Generator, cast
 
 import rich
 from docling_core.types.doc.document import DoclingDocument
@@ -155,6 +155,16 @@ def _get_qdrant() -> QdrantClient:
     return client
 
 
+def zotero_items_iter(zot: zotero.Zotero) -> Generator[dict[str, Any], Any, Any]:
+    start = 0
+    items: list[dict[str, Any]] = cast(list[dict[str, Any]], zot.top(limit=20))
+    while len(items) > 0:
+        for item in items:
+            yield item
+        start += 20
+        items = cast(list[dict[str, Any]], zot.top(start=start, limit=20))
+
+
 def sync(config: Config):
     from docling_core.transforms.chunker.hybrid_chunker import HybridChunker
 
@@ -168,8 +178,8 @@ def sync(config: Config):
     )
     logger.info("Zotero Client started")
 
-    items = cast(list[dict[str, Any]], zot.top(tag="project-clip-gmm"))
-    for item in track(items):
+    num_items = zot.num_items()
+    for item in track(zotero_items_iter(zot), total=num_items):
         logger.info(
             f'Loading Zotero entry "{item["data"]["title"]}" ({item["data"]["key"]})'
         )
