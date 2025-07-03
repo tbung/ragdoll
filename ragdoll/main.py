@@ -7,11 +7,12 @@ from typing import Any, cast
 import numpy as np
 import rich
 import tomllib
-from docling.chunking import HybridChunker
-from docling.datamodel.base_models import DocumentStream, InputFormat
+from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling_core.transforms.chunker.hybrid_chunker import HybridChunker
 from docling_core.types.doc.document import DoclingDocument
+from docling_core.types.io import DocumentStream
 from fastembed import TextEmbedding
 from pydantic.dataclasses import dataclass
 from pyzotero import zotero
@@ -69,13 +70,13 @@ def get_document(zot: zotero.Zotero, key: str) -> DoclingDocument | None:
     pipeline_options = PdfPipelineOptions()
     pipeline_options.do_ocr = False  # pick what you need
     item: dict[str, Any]
-    for item in zot.children(key):
+    for item in zot.children(key):  # type: ignore
         if (
             item["data"]["itemType"] == "attachment"
             and item["data"]["contentType"] == "application/pdf"
         ):
             filename: str = item["data"]["filename"]
-            with io.BytesIO(zot.file(item["key"])) as file:
+            with io.BytesIO(zot.file(item["key"])) as file:  # type: ignore
                 source = DocumentStream(name=filename, stream=file)
                 converter = DocumentConverter(
                     format_options={
