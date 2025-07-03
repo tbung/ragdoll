@@ -1,13 +1,11 @@
 import io
 import logging
 import re
-from pathlib import Path
+import urllib.parse
 from typing import Any, cast
 
-import numpy as np
 import rich
 from docling_core.types.doc.document import DoclingDocument
-from fastembed import TextEmbedding
 from jsonargparse import ArgumentParser
 from pydantic.dataclasses import dataclass
 from pyzotero import zotero
@@ -117,35 +115,9 @@ def query_grouped(
     )
 
 
-def to_chunks(text: str) -> list[str]:
-    # split into groups of 3 sentences
-    # merge groups with distances in the 95 percentile
-    sentences: list[str] = sentence_split_regex.split(text)
-
-    embedder = TextEmbedding()
-    embeddings = np.array(list(embedder.embed(sentences)))
-    print(embeddings.dtype)
-    print(embeddings.shape)
-
-    a = embeddings[1:, None, :]
-    b = embeddings[:-1, :, None]
-    n: np.ndarray = np.linalg.norm(embeddings, axis=1)
-    distances = 1 - (a @ b).squeeze() / n[1:] / n[:-1]
-
-    threshold = np.percentile(distances, 95)
-
-    # since distances are to previous, indices are shifted by one
-    breakpoints = list(np.argwhere(distances > threshold).squeeze() + 1)
-    print(breakpoints)
-
-    chunks = [
-        " ".join(sentences[i:j])
-        for i, j in zip([0] + breakpoints, breakpoints + [None])
-    ]
-    return chunks
-
-
-def get_document(zot: zotero.Zotero, key: str) -> DoclingDocument | None:
+def get_document(
+    zot: zotero.Zotero, key: str
+) -> tuple[DoclingDocument, str] | tuple[None, None]:
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
@@ -169,9 +141,9 @@ def get_document(zot: zotero.Zotero, key: str) -> DoclingDocument | None:
                         )
                     }
                 )
-                return converter.convert(source).document
+                return converter.convert(source).document, item["key"]
 
-    return None
+    return None, None
 
 
 def _get_qdrant() -> QdrantClient:
@@ -201,6 +173,7 @@ def sync(config: Config):
         logger.info(
             f'Loading Zotero entry "{item["data"]["title"]}" ({item["data"]["key"]})'
         )
+
         if client.collection_exists("zotero") and (
             client.count(
                 "zotero",
@@ -216,7 +189,7 @@ def sync(config: Config):
             logger.info(f"Zotero item {item['data']['key']} already indexed")
             continue
 
-        document = get_document(zot, item["data"]["key"])
+        document, attachment_key = get_document(zot, item["data"]["key"])
 
         if document is None:
             logger.info(f"Zotero item {item['data']['key']} has no PDF attachment")
@@ -230,7 +203,11 @@ def sync(config: Config):
             chunks.append(chunker.contextualize(chunk))
             metadata.append(
                 chunk.meta.export_json_dict()
-                | {"key": item["data"]["key"], "title": item["data"]["title"]}
+                | {
+                    "key": item["data"]["key"],
+                    "title": item["data"]["title"],
+                    "attachment_key": attachment_key,
+                }
             )
 
         _ = client.add(
@@ -238,23 +215,33 @@ def sync(config: Config):
         )
 
 
-def query(message: str):
+def query(message: str, limit: int = 10, group_size: int = 1):
     client = _get_qdrant()
     points = query_grouped(
         client,
         collection_name="zotero",
         query_text=message,
-        limit=10,
+        limit=limit,
+        group_size=group_size,
     )
 
     for i, point in enumerate(points):
-        md = Markdown(f"""
+        link = urllib.parse.quote(
+            f"/home/tillb/Zotero/storage/{point.metadata['attachment_key']}/{point.metadata['origin']['filename']}"
+        )
+        md = Markdown(
+            f"""
 # {point.metadata["title"]}, page {point.metadata["doc_items"][0]["prov"][0]["page_no"]}
 
 ## {point.document.replace("\n", "\n\n")}
 
 ---
-                      """)
+                      """,
+            hyperlinks=True,
+        )
+        rich.print(
+            f"[blue][underline][link=file://{link}]Source: {point.metadata['title']}[/link][/underline][/blue]"
+        )
         rich.print(md)
 
 
