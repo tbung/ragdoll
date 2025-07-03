@@ -67,6 +67,21 @@ def sync(zot: zotero.Zotero, client: QdrantClient):
     items = cast(list[dict[str, Any]], zot.top(tag="project-clip-gmm"))
     for item in track(items):
         print(item["data"]["title"])
+        if (
+            client.count(
+                "zotero",
+                count_filter=models.Filter(
+                    must=models.FieldCondition(
+                        key="key",
+                        match=models.MatchValue(value=item["data"]["key"]),
+                    )
+                ),
+            ).count
+            > 0
+        ):
+            print("exists")
+            continue
+
         document = get_document(zot, item["data"]["key"])
 
         if document is None:
