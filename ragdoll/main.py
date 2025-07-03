@@ -1,10 +1,17 @@
+import io
 import re
 from pathlib import Path
+from typing import Any, cast
 
+from docling_core.types.doc.document import DoclingDocument
 import numpy as np
 import tomllib
+import rich
 from fastembed import TextEmbedding
 from pydantic.dataclasses import dataclass
+from docling.datamodel.base_models import DocumentStream
+from docling.document_converter import DocumentConverter
+from docling.chunking import HybridChunker
 from pyzotero import zotero
 from qdrant_client import QdrantClient
 from rich.progress import track
@@ -40,41 +47,50 @@ def to_chunks(text: str) -> list[str]:
     return chunks
 
 
-def get_fulltext(zot: zotero.Zotero, key: str) -> tuple[str, str] | tuple[None, None]:
+def get_document(zot: zotero.Zotero, key: str) -> DoclingDocument | None:
+    item: dict[str, Any]
     for item in zot.children(key):
         if (
             item["data"]["itemType"] == "attachment"
             and item["data"]["contentType"] == "application/pdf"
         ):
-            text = zot.fulltext_item(item["key"])
-            return item["data"]["filename"], text["content"]
+            filename: str = item["data"]["filename"]
+            with io.BytesIO(zot.file(item["key"])) as file:
+                source = DocumentStream(name=filename, stream=file)
+                converter = DocumentConverter()
+                return converter.convert(source).document
 
-    return None, None
+    return None
 
 
 def sync(zot: zotero.Zotero, client: QdrantClient):
-    items = zot.top(tag="project-clip-gmm")
+    items = cast(list[dict[str, Any]], zot.top(tag="project-clip-gmm"))
     for item in track(items):
         print(item["data"]["title"])
-        filename, text = get_fulltext(zot, item["data"]["key"])
+        document = get_document(zot, item["data"]["key"])
 
-        if text is None or filename is None:
+        if document is None:
             continue
 
-        chunks = to_chunks(text)
+        chunks: list[str] = []
+        metadata: list[dict[str, Any]] = []
 
-        _ = client.add(
-            collection_name="zotero",
-            documents=chunks,
-            metadata=[
-                {
-                    "key": item["data"]["key"],
-                    "title": item["data"]["title"],
-                    "filename": filename,
-                }
-                for _ in chunks
-            ],
-        )
+        chunker = HybridChunker()
+        for chunk in chunker.chunk(document):
+            chunks.append(chunker.contextualize(chunk))
+            metadata.append(
+                chunk.meta.export_json_dict()
+                | {"key": item["data"]["key"], "title": item["data"]["title"]}
+            )
+            # rich.print(chunker.contextualize(chunk))
+            # rich.print(
+            #     chunk.meta.export_json_dict()
+            #     | {"key": item["data"]["key"], "title": item["data"]["title"]}
+            # )
+
+        # chunks = to_chunks(text)
+
+        _ = client.add(collection_name="zotero", documents=chunks, metadata=metadata)
 
 
 @dataclass
@@ -94,6 +110,9 @@ def main():
         config = Config(**tomllib.load(f))
 
     client = QdrantClient("http://localhost:6333")
+    client.set_model("BAAI/bge-small-en-v1.5")
+    client.set_sparse_model("prithivida/Splade_PP_en_v1")
+
     zot = zotero.Zotero(
         library_id=config.zotero.library_id,
         library_type=config.zotero.library_type,
@@ -102,6 +121,16 @@ def main():
     )
 
     sync(zot, client)
+    # points = client.query(
+    #     collection_name="zotero",
+    #     query_text="improving clip embeddings",
+    #     limit=10,
+    # )
+
+    for i, point in enumerate(points):
+        print(point.document)
+        print(point.metadata)
+        print()
 
 
 if __name__ == "__main__":

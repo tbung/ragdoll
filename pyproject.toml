@@ -8,6 +8,7 @@ version = "0.0.1"
 dependencies = [
   "fastembed-gpu",
   "pydantic",
+  "docling",
   "pyzotero",
   "qdrant_client",
   "rich",
