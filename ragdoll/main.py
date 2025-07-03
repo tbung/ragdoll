@@ -7,12 +7,7 @@ from typing import Any, cast
 import numpy as np
 import rich
 import tomllib
-from docling.datamodel.base_models import InputFormat
-from docling.datamodel.pipeline_options import PdfPipelineOptions
-from docling.document_converter import DocumentConverter, PdfFormatOption
-from docling_core.transforms.chunker.hybrid_chunker import HybridChunker
 from docling_core.types.doc.document import DoclingDocument
-from docling_core.types.io import DocumentStream
 from fastembed import TextEmbedding
 from pydantic.dataclasses import dataclass
 from pyzotero import zotero
@@ -151,6 +146,11 @@ def to_chunks(text: str) -> list[str]:
 
 
 def get_document(zot: zotero.Zotero, key: str) -> DoclingDocument | None:
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+    from docling_core.types.io import DocumentStream
+
     pipeline_options = PdfPipelineOptions()
     pipeline_options.do_ocr = False  # pick what you need
     item: dict[str, Any]
@@ -175,6 +175,8 @@ def get_document(zot: zotero.Zotero, key: str) -> DoclingDocument | None:
 
 
 def sync(config: Config, client: QdrantClient):
+    from docling_core.transforms.chunker.hybrid_chunker import HybridChunker
+
     logger.info("Starting Zotero Client")
     zot = zotero.Zotero(
         library_id=config.zotero.library_id,
