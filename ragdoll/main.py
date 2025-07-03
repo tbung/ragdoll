@@ -1,4 +1,5 @@
 import io
+import logging
 import re
 from pathlib import Path
 from typing import Any, cast
@@ -14,9 +15,24 @@ from docling.document_converter import DocumentConverter
 from docling.chunking import HybridChunker
 from pyzotero import zotero
 from qdrant_client import QdrantClient
+from rich.logging import RichHandler
 from rich.progress import track
 
+logger = logging.getLogger(__name__)
+
 sentence_split_regex = re.compile(r"(?<=[.?!])\s+")
+
+
+@dataclass
+class ZoteroConfig:
+    library_id: int
+    library_type: str
+    api_key: str
+
+
+@dataclass
+class Config:
+    zotero: ZoteroConfig
 
 
 def to_chunks(text: str) -> list[str]:
@@ -66,7 +82,9 @@ def get_document(zot: zotero.Zotero, key: str) -> DoclingDocument | None:
 def sync(zot: zotero.Zotero, client: QdrantClient):
     items = cast(list[dict[str, Any]], zot.top(tag="project-clip-gmm"))
     for item in track(items):
-        print(item["data"]["title"])
+        logger.info(
+            f'Loading Zotero entry "{item["data"]["title"]}" ({item["data"]["key"]})'
+        )
         if (
             client.count(
                 "zotero",
@@ -79,12 +97,13 @@ def sync(zot: zotero.Zotero, client: QdrantClient):
             ).count
             > 0
         ):
-            print("exists")
+            logger.info(f"Zotero item {item['data']['key']} already indexed")
             continue
 
         document = get_document(zot, item["data"]["key"])
 
         if document is None:
+            logger.info(f"Zotero item {item['data']['key']} has no PDF attachment")
             continue
 
         chunks: list[str] = []
@@ -97,13 +116,6 @@ def sync(zot: zotero.Zotero, client: QdrantClient):
                 chunk.meta.export_json_dict()
                 | {"key": item["data"]["key"], "title": item["data"]["title"]}
             )
-            # rich.print(chunker.contextualize(chunk))
-            # rich.print(
-            #     chunk.meta.export_json_dict()
-            #     | {"key": item["data"]["key"], "title": item["data"]["title"]}
-            # )
-
-        # chunks = to_chunks(text)
 
         _ = client.add(collection_name="zotero", documents=chunks, metadata=metadata)
 
@@ -121,12 +133,20 @@ class Config:
 
 
 def main():
+    logging.basicConfig(
+        format="%(message)s",
+        level=logging.INFO,
+        handlers=[RichHandler(rich_tracebacks=True)],
+    )
+
     with Path("./config.toml").open("rb") as f:
         config = Config(**tomllib.load(f))
 
+    logger.info("Starting Qdrant Client")
     client = QdrantClient("http://localhost:6333")
     client.set_model("BAAI/bge-small-en-v1.5")
     client.set_sparse_model("prithivida/Splade_PP_en_v1")
+    logger.info("Qdrant Client started")
 
     zot = zotero.Zotero(
         library_id=config.zotero.library_id,
