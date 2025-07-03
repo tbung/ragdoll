@@ -17,6 +17,9 @@ from fastembed import TextEmbedding
 from pydantic.dataclasses import dataclass
 from pyzotero import zotero
 from qdrant_client import QdrantClient
+from qdrant_client.fastembed_common import QueryResponse
+from qdrant_client.http import models
+from qdrant_client.hybrid.fusion import reciprocal_rank_fusion
 from rich.logging import RichHandler
 from rich.markdown import Markdown
 from rich.progress import track
@@ -36,6 +39,87 @@ class ZoteroConfig:
 @dataclass
 class Config:
     zotero: ZoteroConfig
+
+
+def query_grouped(
+    self: QdrantClient,
+    collection_name: str,
+    query_text: str,
+    query_filter: models.Filter | None = None,
+    limit: int = 10,
+    group_size: int = 1,
+    **kwargs: Any,
+) -> list[QueryResponse]:
+    embedding_model_inst = self._get_or_init_model(
+        model_name=self.embedding_model_name, deprecated=True
+    )
+    embeddings = list(embedding_model_inst.query_embed(query=query_text))
+    query_vector = embeddings[0].tolist()
+
+    if self.sparse_embedding_model_name is None:
+        return self._scored_points_to_query_responses(
+            self.search(
+                collection_name=collection_name,
+                query_vector=models.NamedVector(
+                    name=self.get_vector_field_name(), vector=query_vector
+                ),
+                query_filter=query_filter,
+                limit=limit,
+                with_payload=True,
+                **kwargs,
+            )
+        )
+
+    sparse_embedding_model_inst = self._get_or_init_sparse_model(
+        model_name=self.sparse_embedding_model_name, deprecated=True
+    )
+    sparse_vector = list(sparse_embedding_model_inst.query_embed(query=query_text))[0]
+    sparse_query_vector = models.SparseVector(
+        indices=sparse_vector.indices.tolist(),
+        values=sparse_vector.values.tolist(),
+    )
+
+    dense_group_response = [
+        p
+        for g in self.search_groups(
+            collection_name,
+            query_vector=models.NamedVector(
+                name=self.get_vector_field_name(),
+                vector=query_vector,
+            ),
+            group_by="key",
+            query_filter=query_filter,
+            limit=limit,
+            group_size=group_size,
+            with_payload=True,
+            **kwargs,
+        ).groups
+        for p in g.hits
+    ]
+
+    sparse_group_response = [
+        p
+        for g in self.search_groups(
+            collection_name,
+            query_vector=models.NamedSparseVector(
+                name=self.get_sparse_vector_field_name() or "",
+                vector=sparse_query_vector,
+            ),
+            group_by="key",
+            query_filter=query_filter,
+            limit=limit,
+            group_size=group_size,
+            with_payload=True,
+            **kwargs,
+        ).groups
+        for p in g.hits
+    ]
+
+    return self._scored_points_to_query_responses(
+        reciprocal_rank_fusion(
+            [dense_group_response, sparse_group_response], limit=limit
+        )
+    )
 
 
 def to_chunks(text: str) -> list[str]:
@@ -157,14 +241,15 @@ def main():
     logger.info("Qdrant Client started")
 
     sync(config, client)
-    # points = client.query(
-    #     collection_name="zotero",
-    #     query_text="improving clip embeddings",
-    #     limit=10,
-    # )
+
+    points = query_grouped(
+        client,
+        collection_name="zotero",
+        query_text="improving clip embeddings",
+        limit=10,
+    )
 
     for i, point in enumerate(points):
-        # rich.print(point.metadata)
         md = Markdown(f"""
 # {point.metadata["title"]}, page {point.metadata["doc_items"][0]["prov"][0]["page_no"]}
 
