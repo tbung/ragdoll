@@ -6,9 +6,10 @@ build-backend = "hatchling.build"
 name = "ragdoll"
 version = "0.0.1"
 dependencies = [
-  "fastembed-gpu",
-  "pydantic",
   "docling",
+  "fastembed-gpu",
+  "jsonargparse[signatures,toml]",
+  "pydantic",
   "pyzotero",
   "qdrant_client",
   "rich",

@@ -6,9 +6,9 @@ from typing import Any, cast
 
 import numpy as np
 import rich
-import tomllib
 from docling_core.types.doc.document import DoclingDocument
 from fastembed import TextEmbedding
+from jsonargparse import ArgumentParser
 from pydantic.dataclasses import dataclass
 from pyzotero import zotero
 from qdrant_client import QdrantClient
@@ -174,9 +174,19 @@ def get_document(zot: zotero.Zotero, key: str) -> DoclingDocument | None:
     return None
 
 
-def sync(config: Config, client: QdrantClient):
+def _get_qdrant() -> QdrantClient:
+    logger.info("Starting Qdrant Client")
+    client = QdrantClient("http://localhost:6333")
+    client.set_model("BAAI/bge-small-en-v1.5")
+    client.set_sparse_model("prithivida/Splade_PP_en_v1")
+    logger.info("Qdrant Client started")
+    return client
+
+
+def sync(config: Config):
     from docling_core.transforms.chunker.hybrid_chunker import HybridChunker
 
+    client = _get_qdrant()
     logger.info("Starting Zotero Client")
     zot = zotero.Zotero(
         library_id=config.zotero.library_id,
@@ -191,7 +201,7 @@ def sync(config: Config, client: QdrantClient):
         logger.info(
             f'Loading Zotero entry "{item["data"]["title"]}" ({item["data"]["key"]})'
         )
-        if (
+        if client.collection_exists("zotero") and (
             client.count(
                 "zotero",
                 count_filter=models.Filter(
@@ -223,31 +233,17 @@ def sync(config: Config, client: QdrantClient):
                 | {"key": item["data"]["key"], "title": item["data"]["title"]}
             )
 
-        _ = client.add(collection_name="zotero", documents=chunks, metadata=metadata)
+        _ = client.add(
+            collection_name="zotero", documents=chunks, metadata=metadata, batch_size=16
+        )
 
 
-def main():
-    logging.basicConfig(
-        format="%(message)s",
-        level=logging.INFO,
-        handlers=[RichHandler(rich_tracebacks=True)],
-    )
-
-    with Path("./config.toml").open("rb") as f:
-        config = Config(**tomllib.load(f))
-
-    logger.info("Starting Qdrant Client")
-    client = QdrantClient("http://localhost:6333")
-    client.set_model("BAAI/bge-small-en-v1.5")
-    client.set_sparse_model("prithivida/Splade_PP_en_v1")
-    logger.info("Qdrant Client started")
-
-    sync(config, client)
-
+def query(message: str):
+    client = _get_qdrant()
     points = query_grouped(
         client,
         collection_name="zotero",
-        query_text="improving clip embeddings",
+        query_text=message,
         limit=10,
     )
 
@@ -260,6 +256,32 @@ def main():
 ---
                       """)
         rich.print(md)
+
+
+def main():
+    logging.basicConfig(
+        format="%(message)s",
+        level=logging.INFO,
+        handlers=[RichHandler(rich_tracebacks=True)],
+    )
+
+    parser = ArgumentParser(parser_mode="toml")
+    subcommands = parser.add_subcommands()
+
+    subparser = ArgumentParser(parser_mode="toml")
+    subparser.add_function_arguments(sync)
+    subcommands.add_subcommand("sync", subparser)
+
+    subparser = ArgumentParser(parser_mode="toml")
+    subparser.add_function_arguments(query, as_positional=True)
+    subcommands.add_subcommand("query", subparser)
+
+    args = parser.parse_args()
+    if args.subcommand == "sync":
+        config = Config(**args.sync.config.as_dict())
+        sync(config)
+    elif args.subcommand == "query":
+        query(args.query.message)
 
 
 if __name__ == "__main__":
