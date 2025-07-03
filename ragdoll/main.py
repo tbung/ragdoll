@@ -17,6 +17,7 @@ from pydantic.dataclasses import dataclass
 from pyzotero import zotero
 from qdrant_client import QdrantClient
 from rich.logging import RichHandler
+from rich.markdown import Markdown
 from rich.progress import track
 
 logger = logging.getLogger(__name__)
@@ -162,9 +163,15 @@ def main():
     # )
 
     for i, point in enumerate(points):
-        print(point.document)
-        print(point.metadata)
-        print()
+        # rich.print(point.metadata)
+        md = Markdown(f"""
+# {point.metadata["title"]}, page {point.metadata["doc_items"][0]["prov"][0]["page_no"]}
+
+## {point.document.replace("\n", "\n\n")}
+
+---
+                      """)
+        rich.print(md)
 
 
 if __name__ == "__main__":
