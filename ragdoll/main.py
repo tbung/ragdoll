@@ -5,6 +5,7 @@ import urllib.parse
 from typing import Any, Generator, cast
 
 import rich
+from docling.datamodel.base_models import ConversionStatus
 from docling_core.types.doc.document import DoclingDocument
 from jsonargparse import ArgumentParser
 from pydantic.dataclasses import dataclass
@@ -115,16 +116,48 @@ def query_grouped(
     )
 
 
-def get_document(
-    zot: zotero.Zotero, key: str
-) -> tuple[DoclingDocument, str] | tuple[None, None]:
+def _docling_convert_batched(filename: str, file: bytes) -> list[DoclingDocument]:
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
     from docling_core.types.io import DocumentStream
 
-    pipeline_options = PdfPipelineOptions()
-    pipeline_options.do_ocr = False  # pick what you need
+    documents: list[DoclingDocument] = []
+    source = DocumentStream(name=filename, stream=io.BytesIO(file))
+    converter = DocumentConverter(
+        format_options={
+            InputFormat.PDF: PdfFormatOption(
+                pipeline_options=PdfPipelineOptions(do_ocr=False)
+            )
+        }
+    )
+
+    first_page = 1
+    batch_size = 100
+    conversion = converter.convert(
+        source,
+        page_range=(first_page, first_page + batch_size - 1),
+        raises_on_error=False,
+    )
+    while conversion.status in [
+        ConversionStatus.SUCCESS,
+        ConversionStatus.PARTIAL_SUCCESS,
+    ]:
+        documents.append(conversion.document)
+        first_page += batch_size
+        source = DocumentStream(name=filename, stream=io.BytesIO(file))
+        conversion = converter.convert(
+            source,
+            page_range=(first_page, first_page + batch_size - 1),
+            raises_on_error=False,
+        )
+
+    return documents
+
+
+def get_document(
+    zot: zotero.Zotero, key: str
+) -> tuple[list[DoclingDocument], str] | tuple[None, None]:
     item: dict[str, Any]
     for item in zot.children(key):  # type: ignore
         if (
@@ -132,16 +165,8 @@ def get_document(
             and item["data"]["contentType"] == "application/pdf"
         ):
             filename: str = item["data"]["filename"]
-            with io.BytesIO(zot.file(item["key"])) as file:  # type: ignore
-                source = DocumentStream(name=filename, stream=file)
-                converter = DocumentConverter(
-                    format_options={
-                        InputFormat.PDF: PdfFormatOption(
-                            pipeline_options=pipeline_options,
-                        )
-                    }
-                )
-                return converter.convert(source).document, item["key"]
+            file: bytes = zot.file(item["key"])  # type: ignore
+            return _docling_convert_batched(filename, file), item["key"]
 
     return None, None
 
@@ -199,30 +224,27 @@ def sync(config: Config):
             logger.info(f"Zotero item {item['data']['key']} already indexed")
             continue
 
-        document, attachment_key = get_document(zot, item["data"]["key"])
+        documents, attachment_key = get_document(zot, item["data"]["key"])
 
-        if document is None:
+        if documents is None:
             logger.info(f"Zotero item {item['data']['key']} has no PDF attachment")
             continue
 
-        chunks: list[str] = []
-        metadata: list[dict[str, Any]] = []
-
         chunker = HybridChunker()
-        for chunk in chunker.chunk(document):
-            chunks.append(chunker.contextualize(chunk))
-            metadata.append(
-                chunk.meta.export_json_dict()
-                | {
-                    "key": item["data"]["key"],
-                    "title": item["data"]["title"],
-                    "attachment_key": attachment_key,
-                }
-            )
-
-        _ = client.add(
-            collection_name="zotero", documents=chunks, metadata=metadata, batch_size=16
-        )
+        for document in documents:
+            for chunk in chunker.chunk(document):
+                _ = client.add(
+                    collection_name="zotero",
+                    documents=[chunker.contextualize(chunk)],
+                    metadata=[
+                        chunk.meta.export_json_dict()
+                        | {
+                            "key": item["data"]["key"],
+                            "title": item["data"]["title"],
+                            "attachment_key": attachment_key,
+                        }
+                    ],
+                )
 
 
 def query(message: str, limit: int = 10, group_size: int = 1):
