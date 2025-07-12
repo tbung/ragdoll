@@ -182,12 +182,12 @@ def _get_qdrant() -> QdrantClient:
 
 def zotero_items_iter(zot: zotero.Zotero) -> Generator[dict[str, Any], Any, Any]:
     start = 0
-    items: list[dict[str, Any]] = cast(list[dict[str, Any]], zot.top(limit=20))
+    items: list[dict[str, Any]] = cast(list[dict[str, Any]], zot.top(limit=20, tag="-no-index"))
     while len(items) > 0:
         for item in items:
             yield item
         start += 20
-        items = cast(list[dict[str, Any]], zot.top(start=start, limit=20))
+        items = cast(list[dict[str, Any]], zot.top(start=start, limit=20, tag="-no-index"))
 
 
 def sync(config: Config):
